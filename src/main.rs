@@ -1,23 +1,19 @@
-use std::io::{Write, Read};
+use std::io::{Write, Read, BufRead};
+use std::collections::VecDeque;
 
 fn main() {
     let content = std::fs::read_to_string("./helpme.bf").unwrap();
-    let mut i = Interpreter::parse(&content);
-    std::io::stdout().flush().unwrap();
-
-    // dbg!(&i);
-
+    let mut i = Interpreter::new(Instruction::parse(&content));
     i.run();
-
-    std::io::stdout().flush().unwrap();
 }
 
 #[derive(Default, Debug)]
 struct Interpreter {
     inst: Vec<Instruction>,
-    inst_cursor: usize,
-    mem: Vec<u8>,
-    mem_cursor: usize,
+    cursor: usize,
+    
+    memory: VecDeque<u8>,
+    pointer: usize,
 }
 
 #[derive(Copy, Clone, Eq, PartialEq, Debug)]
@@ -30,10 +26,11 @@ enum Instruction {
     Read,
     JumpForward, // [->] // IF CELL IS ZERO
     JumpBack, // ]->[ // IF CELL IS NOT ZERO
+    End,
 }
 
-impl Interpreter {
-    pub fn parse(s: &str) -> Self {
+impl Instruction {
+    pub fn parse(s: &str) -> Vec<Self> {
         let mut inst = Vec::with_capacity(s.len());
         for c in s.chars() {
             match c {
@@ -48,89 +45,109 @@ impl Interpreter {
                 _ => {}
             }
         }
+        inst.push(Instruction::End);
+        inst.shrink_to_fit();
+        inst
+    }
+}
 
+impl Interpreter {
+    pub fn new(inst: Vec<Instruction>) -> Self {
         Self { inst, ..Default::default() }
     }
 
     pub fn run(&mut self) {
-        while self.inst_cursor < self.inst.len() {
+        while !self.done() {
             self.step()
         }
     }
 
-    pub fn current_inst(&self) -> Instruction {
-        self.inst[self.inst_cursor]
+    pub fn inst(&self) -> Instruction {
+        self.inst[self.cursor]
     }
 
-    pub fn current_cell(&self) -> u8 {
-        self.mem[self.mem_cursor]
+    pub fn cell(&self) -> u8 {
+        self.memory[self.pointer]
+    }
+
+    pub fn cell_mut(&mut self) -> &mut u8 {
+        &mut self.memory[self.pointer]
+    }
+
+    pub fn done(&self) -> bool {
+        self.inst() == Instruction::End
+    }
+
+    fn on_right_edge(&self) -> bool {
+        self.pointer == self.memory.len() - 1 
+    }
+
+    fn on_left_edge(&self) -> bool {
+        self.pointer == 0
     }
 
     pub fn step(&mut self) {
-        if self.mem.len() == 0 {
-            self.mem.push(0);
+        if self.memory.len() == 0 {
+            self.memory.push_back(0);
         }
 
-        match self.current_inst() {
+        match self.inst() {
+            Instruction::End => return,
             Instruction::MoveRight => {
-                if self.mem_cursor == self.mem.len() - 1 {
-                    self.mem.push(0);
+                if self.on_right_edge() {
+                    self.memory.push_back(0);
                 }
-                self.mem_cursor += 1;
+                self.pointer += 1;
             }
             Instruction::MoveLeft => {
-                if self.mem_cursor == 0 {
-                    self.mem.insert(0, 0);
+                if self.on_left_edge() {
+                    self.memory.push_front(0);
                 } else {
-                    self.mem_cursor -= 1;
+                    self.pointer -= 1;
                 }
             }
             Instruction::Inc => {
-                self.mem[self.mem_cursor] = self.current_cell().wrapping_add(1);
+                *self.cell_mut() += 1;
             }
             Instruction::Dec => {
-                if self.current_cell() != 0 {
-                    self.mem[self.mem_cursor] = self.current_cell().wrapping_sub(1);
+                if self.cell() != 0 { // No underflow subtraction for project
+                    *self.cell_mut() -= 1;
                 }
             }
             Instruction::Write => {
-                print!("{}", self.current_cell() as char)
+                print!("{}", self.cell() as char)
             },
             Instruction::Read => {
-                let input: Option<u8> = std::io::stdin()
-                    .bytes() 
-                    .next()
-                    .and_then(|result| result.ok());
+                let mut line = String::new();
+                let stdin = std::io::stdin();
+                stdin.lock().read_line(&mut line).unwrap();
 
-                self.mem[self.mem_cursor] = input.expect("Valid input");
+                *self.cell_mut() = line.chars().next().unwrap() as u8;
             }
-            Instruction::JumpForward => {
-                if self.current_cell() == 0 {
-                    let mut count = 1;
-                    while count != 0 {
-                        self.inst_cursor += 1;
-                        match self.current_inst() {
-                            Instruction::JumpForward => { count += 1; }
-                            Instruction::JumpBack => { count -= 1; }
-                            _ => {}
-                        }
+            Instruction::JumpForward if self.cell() == 0 => {
+                let mut count = 1;
+                while count != 0 {
+                    self.cursor += 1;
+                    match self.inst() {
+                        Instruction::JumpForward => count += 1,
+                        Instruction::JumpBack => count -= 1,
+                        _ => {}
                     }
                 }
             }
-            Instruction::JumpBack => {
-                if self.current_cell() != 0 {
-                    let mut count = 1;
-                    while count != 0 {
-                        self.inst_cursor -= 1;
-                        match self.current_inst() {
-                            Instruction::JumpBack => { count += 1; }
-                            Instruction::JumpForward => { count -= 1; }
-                            _ => {}
-                        }
+            Instruction::JumpBack if self.cell() != 0 => {
+                let mut count = 1;
+                while count != 0 {
+                    self.cursor -= 1;
+                    match self.inst() {
+                        Instruction::JumpBack => count += 1,
+                        Instruction::JumpForward => count -= 1,
+                        _ => {}
                     }
                 }
             }
+            _ => {}
         }
-        self.inst_cursor += 1;
+        self.cursor += 1;
     }
 }
